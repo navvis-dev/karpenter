@@ -26,6 +26,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/samber/lo"
+
+	"github.com/aws/karpenter-core/pkg/metrics"
 )
 
 type metricInfo struct {
@@ -44,13 +48,55 @@ func (i metricInfo) qualifiedName() string {
 
 func main() {
 	flag.Parse()
-	if flag.NArg() != 2 {
-		log.Printf("Usage: %s path/to/metrics/controller path/to/markdown.md", os.Args[0])
-		os.Exit(1)
+	if flag.NArg() < 2 {
+		log.Fatalf("Usage: %s path/to/metrics/controller path/to/metrics/controller2 path/to/markdown.md", os.Args[0])
 	}
-	fset := token.NewFileSet()
+	var allMetrics []metricInfo
+	for i := 0; i < flag.NArg()-1; i++ {
+		packages := getPackages(flag.Arg(i))
+		allMetrics = append(allMetrics, getMetricsFromPackages(packages...)...)
+	}
+	sort.Slice(allMetrics, bySubsystem(allMetrics))
+
+	outputFileName := flag.Arg(flag.NArg() - 1)
+	f, err := os.Create(outputFileName)
+	if err != nil {
+		log.Fatalf("error creating output file %s, %s", outputFileName, err)
+	}
+
+	log.Println("writing output to", outputFileName)
+	fmt.Fprintf(f, `---
+title: "Metrics"
+linkTitle: "Metrics"
+weight: 12
+
+description: >
+  Inspect Karpenter Metrics
+---
+`)
+	fmt.Fprintf(f, "<!-- this document is generated from hack/docs/metrics_gen_docs.go -->\n")
+	fmt.Fprintf(f, "Karpenter makes several metrics available in Prometheus format to allow monitoring cluster provisioning status. "+
+		"These metrics are available by default at `karpenter.karpenter.svc.cluster.local:8080/metrics` configurable via the `METRICS_PORT` environment variable documented [here](../globalsettings)\n")
+	previousSubsystem := ""
+	for _, metric := range allMetrics {
+		if metric.subsystem != previousSubsystem {
+			subsystemTitle := strings.Join(lo.Map(strings.Split(metric.subsystem, "_"), func(s string, _ int) string {
+				return fmt.Sprintf("%s%s", strings.ToTitle(s[0:1]), s[1:])
+			}), " ")
+			fmt.Fprintf(f, "## %s Metrics\n", subsystemTitle)
+			previousSubsystem = metric.subsystem
+			fmt.Fprintln(f)
+		}
+		fmt.Fprintf(f, "### `%s`\n", metric.qualifiedName())
+		fmt.Fprintf(f, "%s\n", metric.help)
+		fmt.Fprintln(f)
+	}
+
+}
+
+func getPackages(root string) []*ast.Package {
 	var packages []*ast.Package
-	root := flag.Arg(0)
+	fset := token.NewFileSet()
 
 	// walk our metrics controller directory
 	log.Println("parsing code in", root)
@@ -76,7 +122,10 @@ func main() {
 		}
 		return nil
 	})
+	return packages
+}
 
+func getMetricsFromPackages(packages ...*ast.Package) []metricInfo {
 	// metrics are all package global variables
 	var allMetrics []metricInfo
 	for _, pkg := range packages {
@@ -95,39 +144,7 @@ func main() {
 			}
 		}
 	}
-	sort.Slice(allMetrics, bySubsystem(allMetrics))
-
-	outputFileName := flag.Arg(1)
-	f, err := os.Create(outputFileName)
-	if err != nil {
-		log.Fatalf("error creating output file %s, %s", outputFileName, err)
-	}
-
-	log.Println("writing output to", outputFileName)
-	fmt.Fprintf(f, `---
-title: "Metrics"
-linkTitle: "Metrics"
-weight: 100
-
-description: >
-  Inspect Karpenter Metrics
----
-`)
-	fmt.Fprintf(f, "<!-- this document is generated from hack/docs/metrics_gen_docs.go -->\n")
-	fmt.Fprintf(f, "Karpenter makes several metrics available in Prometheus format to allow monitoring cluster provisioning status. "+
-		"These metrics are available by default at `karpenter.karpenter.svc.cluster.local:8080/metrics` configurable via the `METRICS_PORT` environment variable documented [here](../configuration)\n")
-	previousSubsystem := ""
-	for _, metric := range allMetrics {
-		if metric.subsystem != previousSubsystem {
-			fmt.Fprintf(f, "## %s%s Metrics\n", strings.ToTitle(metric.subsystem[0:1]), metric.subsystem[1:])
-			previousSubsystem = metric.subsystem
-			fmt.Fprintln(f)
-		}
-		fmt.Fprintf(f, "### `%s`\n", metric.qualifiedName())
-		fmt.Fprintf(f, "%s\n", metric.help)
-		fmt.Fprintln(f)
-	}
-
+	return allMetrics
 }
 
 func bySubsystem(metrics []metricInfo) func(i int, j int) bool {
@@ -148,7 +165,7 @@ func bySubsystem(metrics []metricInfo) func(i int, j int) bool {
 }
 
 func handleVariableDeclaration(v *ast.GenDecl) []metricInfo {
-	var metrics []metricInfo
+	var promMetrics []metricInfo
 	for _, spec := range v.Specs {
 		vs, ok := spec.(*ast.ValueSpec)
 		if !ok {
@@ -163,7 +180,7 @@ func handleVariableDeclaration(v *ast.GenDecl) []metricInfo {
 			if funcPkg != "prometheus" {
 				continue
 			}
-			if len(ce.Args) != 2 {
+			if len(ce.Args) == 0 {
 				continue
 			}
 			arg := ce.Args[0].(*ast.CompositeLit)
@@ -182,11 +199,19 @@ func handleVariableDeclaration(v *ast.GenDecl) []metricInfo {
 				case *ast.BasicLit:
 					value = val.Value
 				case *ast.SelectorExpr:
-					if selector := fmt.Sprintf("%s.%s", val.X, val.Sel); selector == "metrics.Namespace" {
-						value = "karpenter"
+					selector := fmt.Sprintf("%s.%s", val.X, val.Sel)
+					if v, err := getIdentMapping(selector); err != nil {
+						log.Fatalf("unsupported selector %s, %s", selector, err)
 					} else {
-						log.Fatalf("unsupported selector %s", selector)
+						value = v
 					}
+				case *ast.Ident:
+					if v, err := getIdentMapping(val.String()); err != nil {
+						log.Fatal(err)
+					} else {
+						value = v
+					}
+
 				default:
 					log.Fatalf("unsupported value %T %v", kv.Value, kv.Value)
 				}
@@ -194,7 +219,7 @@ func handleVariableDeclaration(v *ast.GenDecl) []metricInfo {
 					return r == '"'
 				})
 			}
-			metrics = append(metrics, metricInfo{
+			promMetrics = append(promMetrics, metricInfo{
 				namespace: keyValuePairs["Namespace"],
 				subsystem: keyValuePairs["Subsystem"],
 				name:      keyValuePairs["Name"],
@@ -202,7 +227,7 @@ func handleVariableDeclaration(v *ast.GenDecl) []metricInfo {
 			})
 		}
 	}
-	return metrics
+	return promMetrics
 }
 
 func getFuncPackage(fun ast.Expr) string {
@@ -218,6 +243,26 @@ func getFuncPackage(fun ast.Expr) string {
 	if ident, ok := fun.(*ast.Ident); ok {
 		return ident.String()
 	}
+	if iexpr, ok := fun.(*ast.IndexExpr); ok {
+		return getFuncPackage(iexpr.X)
+	}
 	log.Fatalf("unsupported func expression %T, %v", fun, fun)
 	return ""
+}
+
+// we cannot get the value of an Identifier directly so we map it manually instead
+func getIdentMapping(identName string) (string, error) {
+	identMapping := map[string]string{
+		"metrics.Namespace": metrics.Namespace,
+		"Namespace":         metrics.Namespace,
+
+		"nodeSubsystem":           "nodes",
+		"interruptionSubsystem":   "interruption",
+		"nodeTemplateSubsystem":   "nodetemplate",
+		"deprovisioningSubsystem": "deprovisioning",
+	}
+	if v, ok := identMapping[identName]; ok {
+		return v, nil
+	}
+	return "", fmt.Errorf("no identifier mapping exists for %s", identName)
 }

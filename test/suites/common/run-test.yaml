@@ -1,0 +1,37 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: run-test
+  namespace: karpenter-tests
+spec:
+  description: |
+    Execute a karpenter test suite
+  params:
+    - name: cluster-name
+      description: Name of the cluster under test.
+    - name: test-filter
+      description: Test filter passed to `go test -run`
+    - name: git-repo-url
+      description: the git repo url can be used to run tests on a fork
+      default: "https://github.com/aws/karpenter"
+    - name: git-ref
+      description: Git commit, tag, or branch to check out. Requires a corresponding Karpenter snapshot release.
+  workspaces:
+    - name: ws
+  steps:
+
+  - name: checkout-repository
+    image: alpine/git
+    workingDir: $(workspaces.ws.path)
+    script: |
+      echo "Cloning $(params.git-repo-url)"
+      echo "Checking out git ref: $(params.git-ref)"
+      git clone $(params.git-repo-url).git .
+      git checkout $(params.git-ref)
+
+  - name: go-test
+    image: public.ecr.aws/karpenter-testing/tools:latest
+    workingDir: $(workspaces.ws.path)
+    script: |
+      aws eks update-kubeconfig --name $(params.cluster-name)
+      KUBECONFIG=/root/.kube/config FOCUS=$(params.test-filter) make e2etests

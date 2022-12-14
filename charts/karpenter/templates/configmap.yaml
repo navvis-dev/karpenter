@@ -10,5 +10,4 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 data:
-  "batchMaxDuration": "{{ .Values.controller.batchMaxDuration }}"
-  "batchIdleDuration": "{{ .Values.controller.batchIdleDuration }}"
+  {{- list .Values.settings "" | include "flattenMap" | indent 2 }}

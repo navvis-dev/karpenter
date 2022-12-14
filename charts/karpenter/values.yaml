@@ -28,17 +28,19 @@ serviceMonitor:
   # -- Endpoint configuration for the ServiceMonitor.
   endpointConfig: {}
 # -- Number of replicas.
-replicas: 1
+replicas: 2
 # -- The number of old ReplicaSets to retain to allow rollback.
 revisionHistoryLimit: 10
 # -- Strategy for updating the pod.
 strategy:
-  type: Recreate
+  rollingUpdate:
+    maxUnavailable: 1
 # -- Additional labels for the pod.
 podLabels: {}
 # -- Additional annotations for the pod.
 podAnnotations: {}
 podDisruptionBudget:
+  name: karpenter
   maxUnavailable: 1
 # -- SecurityContext for the pod.
 podSecurityContext:
@@ -51,7 +53,7 @@ terminationGracePeriodSeconds:
 # This is required when using a custom CNI.
 hostNetwork: false
 # -- Configure the DNS Policy for the pod
-dnsPolicy: ClusterFirst
+dnsPolicy: Default
 # -- Configure DNS Config for the pod
 dnsConfig: {}
 #  options:
@@ -74,7 +76,9 @@ topologySpreadConstraints:
     topologyKey: topology.kubernetes.io/zone
     whenUnsatisfiable: ScheduleAnyway
 # -- Tolerations to allow the pod to be scheduled to nodes with taints.
-tolerations: []
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Exists
 # -- Additional volumes for the pod.
 extraVolumes: []
 # - name: aws-iam-token
@@ -88,7 +92,7 @@ extraVolumes: []
 
 controller:
   # -- Controller image.
-  image: "public.ecr.aws/karpenter/controller:v0.13.2@sha256:af463b2ab0a9b7b1fdf0991ee733dd8bcf5eabf80907f69ceddda28556aead31"
+  image: "public.ecr.aws/karpenter/controller:v0.20.0@sha256:0aff2bc797652b72ad4a7417664959f2531118f54713ff19c98bae4253519180"
   # -- SecurityContext for the controller container.
   securityContext: {}
   # -- Additional environment variables for the controller pod.
@@ -113,48 +117,45 @@ controller:
   # - name: aws-iam-token
   #   mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
   #   readOnly: true
-
-  # The maximum length of a batch window. The longer this is, the more pods we can consider for provisioning at one
-  # time which usually results in fewer but larger nodes.
-  batchMaxDuration: 10s
-  # The maximum amount of time with no new ending pods that if exceeded ends the current batching window. If pods arrive
-  # faster than this time, the batching window will be extended up to the maxDuration. If they arrive slower, the pods
-  # will be batched separately.
-  batchIdleDuration: 1s
 webhook:
-  # -- Webhook image.
-  image: "public.ecr.aws/karpenter/webhook:v0.13.2@sha256:e10488262a58173911d2b17d6ef1385979e33334807efd8783e040aa241dd239"
-  # -- SecurityContext for the webhook container.
-  securityContext: {}
+  logLevel: error
   # -- The container port to use for the webhook.
   port: 8443
-  # -- Additional environment variables for the webhook pod.
-  env: []
-  # - name: AWS_REGION
-  #   value: eu-west-1
-
-  # -- Resources for the webhook pod.
-  resources:
-    requests:
-      cpu: 100m
-      memory: 50Mi
-    limits:
-      cpu: 100m
-      memory: 50Mi
-  # -- Webhook log level, defaults to the global log level
-  logLevel: ""
-  # -- Webhook log encoding, defaults to the global log encoding
-  logEncoding: ""
-  # -- Additional volumeMounts for the webhook pod.
-  extraVolumeMounts: []
 # -- Global log level
 logLevel: debug
 # -- Gloabl log encoding
 logEncoding: console
-# -- Cluster name.
-clusterName: ""
-# -- Cluster endpoint.
-clusterEndpoint: ""
-aws:
-  # -- The default instance profile to use when launching nodes on AWS
-  defaultInstanceProfile: ""
+# -- Global Settings to configure Karpenter
+settings:
+  # -- The maximum length of a batch window. The longer this is, the more pods we can consider for provisioning at one
+  # time which usually results in fewer but larger nodes.
+  batchMaxDuration: 10s
+  # -- The maximum amount of time with no new ending pods that if exceeded ends the current batching window. If pods arrive
+  # faster than this time, the batching window will be extended up to the maxDuration. If they arrive slower, the pods
+  # will be batched separately.
+  batchIdleDuration: 1s
+  # -- AWS-specific configuration values
+  aws:
+    # -- Cluster name.
+    clusterName: ""
+    # -- Cluster endpoint.
+    clusterEndpoint: ""
+    # -- The default instance profile to use when launching nodes
+    defaultInstanceProfile: ""
+    # -- If true then instances that support pod ENI will report a vpc.amazonaws.com/pod-eni resource
+    enablePodENI: false
+    # -- Indicates whether new nodes should use ENI-based pod density
+    # DEPRECATED: Use `.spec.kubeletConfiguration.maxPods` to set pod density on a per-provisioner basis
+    enableENILimitedPodDensity: true
+    # -- If true then assume we can't reach AWS services which don't have a VPC endpoint
+    # This also has the effect of disabling look-ups to the AWS pricing endpoint
+    isolatedVPC: false
+    # -- The node naming convention (either "ip-name" or "resource-name")
+    nodeNameConvention: "ip-name"
+    # -- The VM memory overhead as a percent that will be subtracted from the total memory for all instance types
+    vmMemoryOverheadPercent: 0.075
+    # -- interruptionQueueName is currently in ALPHA and is disabled by default. Enabling interruption handling may
+    # require additional permissions on the controller service account. Additional permissions are outlined in the docs.
+    interruptionQueueName: ""
+    # -- The global tags to use on all AWS infrastructure resources (launch templates, instances, SQS queue, etc.)
+    tags:

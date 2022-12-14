@@ -16,82 +16,16 @@ package test
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 
-	"github.com/imdario/mergo"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"knative.dev/pkg/logging"
-	"knative.dev/pkg/ptr"
+	"github.com/samber/lo"
 
-	"github.com/aws/karpenter/pkg/apis/provisioning/v1alpha5"
+	corev1alpha5 "github.com/aws/karpenter-core/pkg/apis/v1alpha5"
+	"github.com/aws/karpenter-core/pkg/test"
+	"github.com/aws/karpenter/pkg/apis/v1alpha5"
 )
 
-// ProvisionerOptions customizes a Provisioner.
-type ProvisionerOptions struct {
-	metav1.ObjectMeta
-	Limits               v1.ResourceList
-	Provider             interface{}
-	ProviderRef          *v1alpha5.ProviderRef
-	Kubelet              *v1alpha5.KubeletConfiguration
-	Labels               map[string]string
-	Taints               []v1.Taint
-	StartupTaints        []v1.Taint
-	Requirements         []v1.NodeSelectorRequirement
-	Status               v1alpha5.ProvisionerStatus
-	TTLSecondsAfterEmpty *int64
-}
-
-// Provisioner creates a test provisioner with defaults that can be overridden by ProvisionerOptions.
-// Overrides are applied in order, with a last write wins semantic.
-func Provisioner(overrides ...ProvisionerOptions) *v1alpha5.Provisioner {
-	options := ProvisionerOptions{}
-	for _, opts := range overrides {
-		if err := mergo.Merge(&options, opts, mergo.WithOverride); err != nil {
-			panic(fmt.Sprintf("Failed to merge provisioner options: %s", err))
-		}
-	}
-	if options.Name == "" {
-		options.Name = RandomName()
-	}
-	if options.Limits == nil {
-		options.Limits = v1.ResourceList{v1.ResourceCPU: resource.MustParse("1000")}
-	}
-	if options.TTLSecondsAfterEmpty == nil {
-		options.TTLSecondsAfterEmpty = ptr.Int64(10)
-	}
-
-	provisioner := &v1alpha5.Provisioner{
-		ObjectMeta: ObjectMeta(options.ObjectMeta),
-		Spec: v1alpha5.ProvisionerSpec{
-			Requirements:         options.Requirements,
-			KubeletConfiguration: options.Kubelet,
-			ProviderRef:          options.ProviderRef,
-			Taints:               options.Taints,
-			StartupTaints:        options.StartupTaints,
-			Labels:               options.Labels,
-			Limits:               &v1alpha5.Limits{Resources: options.Limits},
-			TTLSecondsAfterEmpty: options.TTLSecondsAfterEmpty,
-		},
-		Status: options.Status,
-	}
-
-	if options.ProviderRef == nil {
-		if options.Provider == nil {
-			options.Provider = struct{}{}
-		}
-		provider, err := json.Marshal(options.Provider)
-		if err != nil {
-			panic(err)
-		}
-		provisioner.Spec.Provider = &runtime.RawExtension{Raw: provider}
-	}
+func Provisioner(options test.ProvisionerOptions) *corev1alpha5.Provisioner {
+	provisioner := v1alpha5.Provisioner(lo.FromPtr(test.Provisioner(options)))
 	provisioner.SetDefaults(context.Background())
-	if err := provisioner.Validate(context.Background()); err != nil {
-		logging.FromContext(context.TODO()).Info("TODO: Fix the tests that cause this")
-	}
-	return provisioner
+	return lo.ToPtr(corev1alpha5.Provisioner(provisioner))
 }

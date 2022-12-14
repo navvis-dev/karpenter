@@ -16,25 +16,33 @@ limitations under the License.
 package apis
 
 import (
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"knative.dev/pkg/webhook/resourcesemantics"
+	_ "embed"
 
-	"github.com/aws/karpenter/pkg/apis/awsnodetemplate/v1alpha1"
-	"github.com/aws/karpenter/pkg/apis/provisioning/v1alpha5"
+	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/samber/lo"
+
+	"github.com/aws/karpenter-core/pkg/apis"
+	"github.com/aws/karpenter-core/pkg/utils/functional"
+	"github.com/aws/karpenter-core/pkg/utils/sets"
+	"github.com/aws/karpenter/pkg/apis/config/settings"
+	"github.com/aws/karpenter/pkg/apis/v1alpha1"
 )
 
 var (
 	// Builder includes all types within the apis package
 	Builder = runtime.NewSchemeBuilder(
-		v1alpha5.SchemeBuilder.AddToScheme,
 		v1alpha1.SchemeBuilder.AddToScheme,
 	)
 	// AddToScheme may be used to add all resources defined in the project to a Scheme
 	AddToScheme = Builder.AddToScheme
-	// Resources defined in the project
-	Resources = map[schema.GroupVersionKind]resourcesemantics.GenericCRD{
-		v1alpha5.SchemeGroupVersion.WithKind("Provisioner"):     &v1alpha5.Provisioner{},
-		v1alpha1.SchemeGroupVersion.WithKind("AWSNodeTemplate"): &v1alpha1.AWSNodeTemplate{},
-	}
+	Settings    = sets.New(settings.Registration)
+)
+
+//go:generate controller-gen crd paths="./..." output:crd:artifacts:config=crds
+var (
+	//go:embed crds/karpenter.k8s.aws_awsnodetemplates.yaml
+	AWSNodeTemplateCRD []byte
+	CRDs               = append(apis.CRDs, lo.Must(functional.Unmarshal[v1.CustomResourceDefinition](AWSNodeTemplateCRD)))
 )
